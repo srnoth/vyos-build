@@ -115,6 +115,13 @@ QEMU_CONFIG = {
     },
 }
 
+if platform.machine() in ['amd64', 'x86_64']:
+    architecture = 'amd64'
+elif platform.machine() in ['arm64', 'aarch64']:
+    architecture = 'arm64'
+else:
+    raise ValueError('Unsupported architecture!')
+
 parser = argparse.ArgumentParser(description='Install and start a test VyOS vm.')
 parser.add_argument('--iso', help='ISO file to install')
 parser.add_argument('--disk', help='name of disk image file', nargs='?')
@@ -212,13 +219,6 @@ def get_qemu_cmd(name, enable_uefi, disk_img, raid=None, iso_img=None, tpm=False
     uuid = "f48b60b2-e6ad-49ef-9d09-4245d0585e52"
     accel = ',accel=kvm' if _kvm_exists() else ''
 
-    if platform.machine() in ['amd64', 'x86_64']:
-        architecture = 'amd64'
-    elif platform.machine() in ['arm64', 'aarch64']:
-        architecture = 'arm64'
-    else:
-        raise ValueError('Unsupported architecture!')
-
     qemu_arch_config = QEMU_CONFIG[architecture]
     qemu_bin = qemu_arch_config['bin']
     bios = qemu_arch_config['bios']
@@ -231,6 +231,11 @@ def get_qemu_cmd(name, enable_uefi, disk_img, raid=None, iso_img=None, tpm=False
     if vnc_enabled:
         vga = '-vga virtio'
         vnc = '-vnc :0'
+
+    # There is no legacy BIOS on the arm64 QEMU machine - it always needs
+    # firmware to boot, regardless of whether --uefi was requested.
+    if architecture == 'arm64':
+        uefi = f'-bios {bios}'
 
     if enable_uefi:
         uefi = f'-bios {bios}'
@@ -554,8 +559,12 @@ def BOOTLOADERchooseSerialConsole(child, live: bool) -> None:
     GRUB_STRING = r'GNU GRUB.*'
     ISOLINUX_STRING = r'ISOLINUX.*'
 
+    # There is no legacy BIOS on the arm64 QEMU machine - it always
+    # loads UEFI firmware and jumps straight to GRUB.
+    boots_uefi = args.uefi or architecture == 'arm64'
+
     # XXX: UEFI systems directly load GRUB, BIOS systems fallback to ISOLINUX
-    if live and args.uefi:
+    if live and boots_uefi:
         # Let UEFI start before GRUB
         child.expect(UEFI_STRING, timeout=BOOTLOADER_TMO)
         # Wait for GRUB
@@ -571,7 +580,7 @@ def BOOTLOADERchooseSerialConsole(child, live: bool) -> None:
         time.sleep(BOOTLOADER_SLEEP)
         # Boot
         child.send(KEY_RETURN)
-    elif live and not args.uefi:
+    elif live and not boots_uefi:
         # Wait for ISOLINUX
         child.expect(ISOLINUX_STRING, timeout=BOOTLOADER_TMO)
         time.sleep(BOOTLOADER_LOAD_TMO)
@@ -586,11 +595,18 @@ def BOOTLOADERchooseSerialConsole(child, live: bool) -> None:
         child.send(KEY_RETURN)
     else:
         # Let UEFI start before GRUB
-        if args.uefi:
+        if boots_uefi:
             child.expect(UEFI_STRING, timeout=BOOTLOADER_TMO)
 
         # Wait for GRUB
         child.expect(GRUB_STRING, timeout=BOOTLOADER_TMO)
+
+        if architecture == 'arm64':
+            # arm64 only ships grub-efi, it uses "Select console type" as its own top-level entry.
+            # The highlighted default entry already boots with the correct serial console
+            # Just let it auto-boot instead of navigating this menu.
+            return None
+
         time.sleep(BOOTLOADER_LOAD_TMO)
 
         # Select GRUB serial console
