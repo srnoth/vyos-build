@@ -91,11 +91,17 @@ jobs:
       - name: Collect debs
         run: |
           mkdir -p kernel-debs
+          # exclude the -dbg deb: it's ~400MB, and the ISO job installs every deb
+          # in the artifact into the image via packages.chroot
           cp scripts/package-build/linux-kernel/linux-image-*.deb kernel-debs/
+          rm -f kernel-debs/linux-image-*-dbg_*.deb
           ls -la kernel-debs/
+          DEB=$(ls kernel-debs/linux-image-*.deb)
+          [ "$(echo "$DEB" | wc -l)" -eq 1 ] \
+            || { echo "::error::expected exactly one kernel image deb, got: $DEB"; exit 1; }
           # sanity: the image deb must contain the iwlmld module
-          dpkg -c kernel-debs/linux-image-*.deb | grep -E 'iwlwifi|mld' || true
-          dpkg -c kernel-debs/linux-image-*.deb | grep -q 'iwlwifi/mld/iwlmld.ko' \
+          dpkg -c "$DEB" | grep -E 'iwlwifi|mld' || true
+          dpkg -c "$DEB" | grep -q 'iwlwifi/mld/iwlmld.ko' \
             || { echo "::error::iwlmld.ko not found in kernel package"; exit 1; }
 
       - uses: actions/upload-artifact@v4
