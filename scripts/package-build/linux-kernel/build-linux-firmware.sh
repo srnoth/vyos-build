@@ -87,6 +87,29 @@ for FILE_PATTERN in ${FW_FILES}; do
     done
 done
 
+# Fallback for versioned iwlwifi ucode: MODULE_FIRMWARE declares only the
+# API_MAX filename (e.g. iwlwifi-gl-c0-fm-c0-c99.ucode) while linux-firmware
+# may only ship lower API versions the driver falls back to at runtime
+# (e.g. -101/-100). If an iwlwifi ucode pattern matched nothing above,
+# install every shipped API version for that firmware prefix.
+for FILE_PATTERN in ${FW_FILES}; do
+    case "${FILE_PATTERN}" in
+        iwlwifi-*.ucode)
+            BASENAME=$(basename "${FILE_PATTERN}")
+            if ! find "${VYOS_FIRMWARE_DIR}/lib/firmware" -name "${BASENAME}" 2>/dev/null | grep -q .; then
+                PREFIX=$(echo "${BASENAME}" | sed -E 's/-[a-z]?[0-9]+\.ucode$//')
+                find "${LINUX_FIRMWARE_BUILD_DIR}" -name "${PREFIX}-*.ucode" -print0 | while IFS= read -r -d $'\0' FILE; do
+                    TARGET="$(echo "${FILE}" | sed "s/${LINUX_FIRMWARE_BUILD_DIR}\///g")"
+                    TARGET_DIR="${VYOS_FIRMWARE_DIR}/lib/firmware/$(dirname "${TARGET}")"
+                    mkdir -p "${TARGET_DIR}"
+                    echo "I: install firmware (api fallback): ${TARGET}"
+                    cp -P "${FILE}" "${TARGET_DIR}"
+                done
+            fi
+            ;;
+    esac
+done
+
 echo "I: Create linux-firmware package"
 rm -f ${VYOS_FIRMWARE_NAME}_*.deb
 
