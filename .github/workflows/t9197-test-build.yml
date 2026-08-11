@@ -1,0 +1,161 @@
+# Test build for https://vyos.dev/T9197 / https://github.com/vyos/vyos-build/pull/1265
+# Verifies CONFIG_IWLMLD=m survives Kconfig dependency resolution, then builds the
+# VyOS kernel package and a generic ISO embedding it, and asserts the ISO's kernel
+# actually carries IWLMLD before uploading the image as an artifact.
+name: T9197 IWLMLD test build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: t9197-test-build
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CONTAINER: vyos/vyos-build:rolling
+
+jobs:
+  precheck:
+    name: "Pre-check: IWLMLD survives config merge"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kconfig prerequisites
+        run: sudo apt-get update -q && sudo apt-get install -y flex bison bc libssl-dev
+
+      - name: Fetch kernel source
+        run: |
+          KVER=$(grep -Po 'kernel_version = "\K[^"]+' data/defaults.toml)
+          echo "KVER=$KVER" >> "$GITHUB_ENV"
+          curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KVER}.tar.xz"
+          tar xf "linux-${KVER}.tar.xz"
+
+      - name: Apply VyOS kernel patches
+        run: |
+          cd "linux-${KVER}"
+          for p in ../scripts/package-build/linux-kernel/patches/kernel/*; do
+            echo "applying $p"
+            patch -p1 < "$p"
+          done
+
+      - name: Merge config fragments and verify (x86 and arm64)
+        run: |
+          cd "linux-${KVER}"
+          CFG=../scripts/package-build/linux-kernel/config
+          for arch in x86 arm64; do
+            [ "$arch" = "arm64" ] && export ARCH=arm64 || unset ARCH
+            frags=("$CFG/$arch/vyos_defconfig")
+            for f in "$CFG"/*.config; do frags+=("$f"); done
+            echo "::group::merge_config for $arch"
+            scripts/kconfig/merge_config.sh "${frags[@]}"
+            echo "::endgroup::"
+            echo "--- $arch results:"
+            grep -E '^CONFIG_IWL(WIFI|DVM|MVM|MLD)=' .config || true
+            if [ "$(grep -E '^CONFIG_IWLMLD=' .config)" != "CONFIG_IWLMLD=m" ]; then
+              echo "::error::$arch: CONFIG_IWLMLD=m did not survive dependency resolution"
+              exit 1
+            fi
+            make mrproper
+          done
+          echo "PASS: CONFIG_IWLMLD=m survives on both architectures"
+
+  build-kernel:
+    name: Build VyOS kernel package
+    needs: precheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build linux-kernel package in vyos-build container
+        run: |
+          docker pull -q $CONTAINER
+          docker run --rm -v "$GITHUB_WORKSPACE:/vyos" \
+            -w /vyos/scripts/package-build/linux-kernel \
+            -e GOSU_UID=$(id -u) -e GOSU_GID=$(id -g) \
+            $CONTAINER \
+            ./build.py --config package.toml --packages linux-kernel
+
+      - name: Collect debs
+        run: |
+          mkdir -p kernel-debs
+          cp scripts/package-build/linux-kernel/linux-image-*.deb kernel-debs/
+          ls -la kernel-debs/
+          # sanity: the image deb must contain the iwlmld module
+          dpkg -c kernel-debs/linux-image-*.deb | grep -E 'iwlwifi|mld' || true
+          dpkg -c kernel-debs/linux-image-*.deb | grep -q 'iwlwifi/mld/iwlmld.ko' \
+            || { echo "::error::iwlmld.ko not found in kernel package"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-debs
+          path: kernel-debs/*.deb
+          retention-days: 30
+
+  build-iso:
+    name: Build and verify test ISO
+    needs: build-kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-debs
+          path: packages/
+
+      - name: Build ISO with local kernel package
+        run: |
+          VERSION="$(date +%Y.%m.%d)-T9197-iwlmld"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          ls -la packages/
+          docker pull -q $CONTAINER
+          docker run --rm --privileged --sysctl net.ipv6.conf.lo.disable_ipv6=0 \
+            -v "$GITHUB_WORKSPACE:/vyos" -w /vyos \
+            -e GOSU_UID=$(id -u) -e GOSU_GID=$(id -g) \
+            $CONTAINER \
+            sudo ./build-vyos-image generic --architecture amd64 \
+              --build-by srnoth@gmail.com --version "$VERSION"
+
+      - name: Verify ISO kernel has IWLMLD
+        run: |
+          sudo apt-get install -y squashfs-tools p7zip-full
+          ISO=$(ls build/vyos-*.iso)
+          echo "ISO: $ISO"
+          7z x -oiso-extract "$ISO" live/filesystem.squashfs
+          unsquashfs -q -d sq iso-extract/live/filesystem.squashfs \
+            'boot/config-*' 'usr/lib/modules' 'lib/modules' || true
+          echo "--- kernel config:"
+          grep -E '^CONFIG_IWL(WIFI|DVM|MVM|MLD)=' sq/boot/config-* \
+            || { echo "::error::no kernel config found in squashfs"; exit 1; }
+          grep -q '^CONFIG_IWLMLD=m' sq/boot/config-* \
+            || { echo "::error::ISO kernel lacks CONFIG_IWLMLD=m — local deb was not used"; exit 1; }
+          echo "--- iwlmld module:"
+          find sq -path '*iwlwifi/mld*' -name 'iwlmld.ko*' | grep . \
+            || { echo "::error::iwlmld.ko missing from ISO kernel modules"; exit 1; }
+          echo "PASS: ISO kernel carries CONFIG_IWLMLD=m and iwlmld.ko"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vyos-iso-t9197
+          path: build/vyos-*.iso
+          retention-days: 30
