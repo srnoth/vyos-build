@@ -89,16 +89,29 @@ done
 
 # Fallback for versioned iwlwifi ucode: MODULE_FIRMWARE declares only the
 # API_MAX filename (e.g. iwlwifi-gl-c0-fm-c0-c99.ucode) while linux-firmware
-# may only ship lower API versions the driver falls back to at runtime
-# (e.g. -101/-100). If an iwlwifi ucode pattern matched nothing above,
-# install every shipped API version for that firmware prefix.
+# may only ship other API versions the driver falls back to at runtime
+# (e.g. -101/-100). If an iwlwifi ucode pattern matched nothing above (the
+# package would otherwise ship no firmware for that device), install the
+# shipped versions of that prefix whose API number is >= the declared
+# API_MAX number ('c' prefix stripped) -- everything below it is below the
+# driver's minimum supported API and can never be loaded. Also install the
+# prefix's .pnvm data files, which the driver requires at runtime but does
+# not always declare via MODULE_FIRMWARE.
 for FILE_PATTERN in ${FW_FILES}; do
     case "${FILE_PATTERN}" in
         iwlwifi-*.ucode)
             BASENAME=$(basename "${FILE_PATTERN}")
             if ! find "${VYOS_FIRMWARE_DIR}/lib/firmware" -name "${BASENAME}" 2>/dev/null | grep -q .; then
                 PREFIX=$(echo "${BASENAME}" | sed -E 's/-[a-z]?[0-9]+\.ucode$//')
-                find "${LINUX_FIRMWARE_BUILD_DIR}" -name "${PREFIX}-*.ucode" -print0 | while IFS= read -r -d $'\0' FILE; do
+                MAXV=$(echo "${BASENAME}" | sed -E 's/^.*-[a-z]?([0-9]+)\.ucode$/\1/')
+                find "${LINUX_FIRMWARE_BUILD_DIR}" \( -name "${PREFIX}-*.ucode" -o -name "${PREFIX}*.pnvm" \) -print0 | while IFS= read -r -d $'\0' FILE; do
+                    case "${FILE}" in
+                        *.ucode)
+                            V=$(basename "${FILE}" | sed -E 's/^.*-[a-z]?([0-9]+)\.ucode$/\1/')
+                            case "${V}" in ''|*[!0-9]*) continue ;; esac
+                            [ "${V}" -ge "${MAXV}" ] || continue
+                            ;;
+                    esac
                     TARGET="$(echo "${FILE}" | sed "s/${LINUX_FIRMWARE_BUILD_DIR}\///g")"
                     TARGET_DIR="${VYOS_FIRMWARE_DIR}/lib/firmware/$(dirname "${TARGET}")"
                     mkdir -p "${TARGET_DIR}"
