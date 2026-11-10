@@ -1,4 +1,4 @@
 [[packages]]
 name = "vyos-1x"
-commit_id = "49bdfa429d2dae2435cdb90b46e5b9973a4665eb"
-scm_url = "/vyos/local-src/vyos-1x-noth2.bundle"
+commit_id = "7b17be1a02872a0340cc8b3430d7553d278f98b7"
+scm_url = "/vyos/local-src/vyos-1x-noth3.bundle"
