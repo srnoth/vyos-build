@@ -22,7 +22,7 @@ DRIVER_NAME=$1
 cd ${CWD}/ethernet-linux-${DRIVER_NAME}
 if [ -d .git ]; then
     git clean --force -d -x
-    git reset --hard origin/main
+    git reset --hard HEAD
 fi
 
 # See https://vyos.dev/T6155
