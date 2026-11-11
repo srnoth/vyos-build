@@ -9,7 +9,7 @@ curated_vyos_build_head: 8c73ef84307d832323813042c67f04a8a27f0a8d (branch noth-s
 curated_vyos_1x_head: a84f7e54f23ff1463b8548474a9cfed38c7c60a6 (branch noth-stable, srnoth/vyos-1x)
 kernel: 6.18.50
 linux_firmware: 20260916
-promoted: 2026-10-12 (noth-camper-fw1 only; noth-sc-fw2 not yet)
+promoted: 2026-10-12 (one router only; the rest not yet)
 included_on_top_of_base:
   - vyos-build PR #1323 (T9197, iwlwifi firmware selection; upstream 78005f0, merged 2026-10-12)
   - vyos-1x f75c7b74d (T8989, OIDC audience hotfix)
@@ -21,8 +21,8 @@ deferred_to_next_cycle:
 known_constraints:
   - T3871 interface naming rework is in the base; every ethernet interface must
     carry hw-id in the config before upgrading (T9291 / T9440).
-  - noth-sc-fw2: review open WWAN reports (T9350, T9326, T9174, T9349) before
-    promoting there.
+  - routers with a WWAN modem: review open WWAN reports (T9350, T9326, T9174,
+    T9349) before promoting there.
 notes: When judging the next candidate, anything listed under
   included_on_top_of_base that is already contained in the candidate needs no
   cherry-pick. Take the candidate's commits from the nightly's own manifest,
